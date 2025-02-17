@@ -14,6 +14,7 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
+// Config remains unchanged.
 type Config struct {
 	User       string `json:"user"`
 	Pass       string `json:"pass"`
@@ -22,14 +23,39 @@ type Config struct {
 	HealthPort int    `json:"health_port"` // default 8080
 }
 
+// Updated HealthStatus includes FailingStreak and Log.
 type HealthStatus struct {
 	sync.RWMutex
-	Healthy    bool      `json:"healthy"`
-	LastUpdate time.Time `json:"last_update"`
-	LastError  string    `json:"last_error"`
-	CurrentIP  string    `json:"current_ip"`
-	StartTime  time.Time `json:"-"`
-	Interval   int       `json:"interval"`
+	Healthy       bool             `json:"healthy"`
+	LastUpdate    time.Time        `json:"last_update"`
+	LastError     string           `json:"last_error"`
+	CurrentIP     string           `json:"current_ip"`
+	StartTime     time.Time        `json:"-"`
+	Interval      int              `json:"interval"`
+	FailingStreak int              `json:"failing_streak"`
+	Log           []HealthLogEntry `json:"log"`
+}
+
+// HealthLogEntry holds details for each IP check attempt.
+type HealthLogEntry struct {
+	Start    time.Time `json:"Start"`
+	End      time.Time `json:"End"`
+	ExitCode int       `json:"ExitCode"`
+	Output   string    `json:"Output"`
+}
+
+// HealthResponse and HealthState represent the new output structure.
+type HealthResponse struct {
+	Created time.Time   `json:"Created"`
+	Path    string      `json:"Path"`
+	Args    []string    `json:"Args"`
+	State   HealthState `json:"State"`
+}
+
+type HealthState struct {
+	Status        string           `json:"Status"`        // "starting", "healthy", or "unhealthy"
+	FailingStreak int              `json:"FailingStreak"` // current failing streak count
+	Log           []HealthLogEntry `json:"Log"`           // recent log entries
 }
 
 var (
@@ -50,6 +76,7 @@ func main() {
 	select {}
 }
 
+// loadConfig and handleConfigChanges remain unchanged.
 func loadConfig(firstLoad bool) {
 	file, err := os.ReadFile(configPath)
 	if err != nil {
@@ -75,7 +102,7 @@ func loadConfig(firstLoad bool) {
 	health.Interval = config.Interval
 	health.Unlock()
 
-	log.Printf("Config loaded: %+v", config)
+	log.Println("Config loaded successfully")
 }
 
 func handleConfigChanges(newConfig Config) {
@@ -186,39 +213,73 @@ func runHealthServer(ctx context.Context) {
 }
 
 func checkAndUpdateIP() {
+	// Record the start time of the check.
+	start := time.Now()
+
 	ip, err := getPublicIP()
+	end := time.Now()
+	var exitCode int
+	var output string
+
 	if err != nil {
+		exitCode = 1
+		output = fmt.Sprintf("Error getting IP: %v", err)
 		health.Lock()
 		health.Healthy = false
 		health.LastError = err.Error()
+		health.FailingStreak++
 		health.Unlock()
 		log.Printf("Error getting IP: %v", err)
-		return
-	}
-
-	health.Lock()
-	health.CurrentIP = ip
-	health.Unlock()
-
-	if ip != ipCache {
-		if err := updateDDNS(ip); err != nil {
-			health.Lock()
-			health.Healthy = false
-			health.LastError = err.Error()
-			health.Unlock()
-			log.Printf("DDNS update failed: %v", err)
-			return
-		}
-		ipCache = ip
-		log.Printf("DDNS updated successfully with IP: %s", ip)
 	} else {
-		log.Printf("IP unchanged: %s", ip)
+		// Successful IP fetch
+		if ip != ipCache {
+			if err := updateDDNS(ip); err != nil {
+				exitCode = 1
+				output = fmt.Sprintf("DDNS update failed: %v", err)
+				health.Lock()
+				health.Healthy = false
+				health.LastError = err.Error()
+				health.FailingStreak++
+				health.Unlock()
+				log.Printf("DDNS update failed: %v", err)
+			} else {
+				ipCache = ip
+				exitCode = 0
+				output = fmt.Sprintf("DDNS updated successfully with IP: %s", ip)
+				health.Lock()
+				health.Healthy = true
+				health.LastError = ""
+				health.FailingStreak = 0
+				health.CurrentIP = ip
+				health.LastUpdate = time.Now()
+				health.Unlock()
+				log.Printf("DDNS updated successfully with IP: %s", ip)
+			}
+		} else {
+			exitCode = 0
+			output = fmt.Sprintf("IP unchanged: %s", ip)
+			health.Lock()
+			health.Healthy = true
+			health.LastError = ""
+			health.FailingStreak = 0
+			health.LastUpdate = time.Now()
+			health.Unlock()
+			log.Printf("IP unchanged: %s", ip)
+		}
 	}
 
+	// Append a new log entry for this check.
 	health.Lock()
-	health.Healthy = true
-	health.LastError = ""
-	health.LastUpdate = time.Now()
+	health.Log = append(health.Log, HealthLogEntry{
+		Start:    start,
+		End:      end,
+		ExitCode: exitCode,
+		Output:   output,
+	})
+	// Optionally, limit the log slice to the last 10 entries.
+	if len(health.Log) > 10 {
+		health.Log = health.Log[len(health.Log)-10:]
+	}
 	health.Unlock()
 }
 
@@ -258,24 +319,32 @@ func updateDDNS(ip string) error {
 	return nil
 }
 
+// healthHandler now builds and returns the new JSON structure.
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	health.RLock()
 	defer health.RUnlock()
 
+	// Determine the status: if no update has yet occurred, show "starting"
+	status := "starting"
+	if !health.LastUpdate.IsZero() {
+		if health.Healthy {
+			status = "healthy"
+		} else {
+			status = "unhealthy"
+		}
+	}
+
+	response := HealthResponse{
+		Created: health.StartTime,
+		Path:    r.URL.Path, // will be "/health"
+		Args:    os.Args,    // returns the command-line arguments
+		State: HealthState{
+			Status:        status,
+			FailingStreak: health.FailingStreak,
+			Log:           health.Log,
+		},
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(struct {
-		Healthy    bool      `json:"healthy"`
-		LastUpdate time.Time `json:"last_update"`
-		LastError  string    `json:"last_error"`
-		CurrentIP  string    `json:"current_ip"`
-		Uptime     string    `json:"uptime"`
-		Interval   int       `json:"interval"`
-	}{
-		Healthy:    health.Healthy,
-		LastUpdate: health.LastUpdate,
-		LastError:  health.LastError,
-		CurrentIP:  health.CurrentIP,
-		Uptime:     time.Since(health.StartTime).String(),
-		Interval:   health.Interval,
-	})
+	json.NewEncoder(w).Encode(response)
 }
