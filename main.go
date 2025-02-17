@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
-	"os/signal"
 	"sync"
 	"time"
 
@@ -18,200 +18,220 @@ type Config struct {
 	User       string `json:"user"`
 	Pass       string `json:"pass"`
 	Ddns       string `json:"ddns"`
-	Interval   int    `json:"interval"`
-	HealthPort int    `json:"health_port"`
+	Interval   int    `json:"interval"`    // default 300
+	HealthPort int    `json:"health_port"` // default 8080
+}
+
+type HealthStatus struct {
+	sync.RWMutex
+	Healthy    bool      `json:"healthy"`
+	LastUpdate time.Time `json:"last_update"`
+	LastError  string    `json:"last_error"`
+	CurrentIP  string    `json:"current_ip"`
+	StartTime  time.Time `json:"-"`
+	Interval   int       `json:"interval"`
 }
 
 var (
-	config       Config
-	configPath   = "config/config.json"
-	configLock   sync.RWMutex
-	ipCache      string
-	healthStatus struct {
-		sync.RWMutex
-		LastUpdate time.Time
-		LastError  string
-		IP         string
-		IsHealthy  bool
-	}
+	config             Config
+	configPath         = "config/config.json"
+	health             = HealthStatus{StartTime: time.Now()}
+	ipCache            string
+	client             = &http.Client{Timeout: 10 * time.Second}
+	ipCheckerCancel    context.CancelFunc
+	healthServerCancel context.CancelFunc
 )
 
-// Add startup time tracking
-var startTime = time.Now()
-
 func main() {
-	// Initial config load
-	if err := loadConfig(); err != nil {
-		panic(err)
+	loadConfig(true)
+	go watchConfig()
+	startHealthServer()
+	startIPChecker()
+	select {}
+}
+
+func loadConfig(firstLoad bool) {
+	file, err := os.ReadFile(configPath)
+	if err != nil {
+		log.Fatalf("Error reading config: %v", err)
 	}
 
-	// Create context for graceful shutdown
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	newConfig := Config{Interval: 300, HealthPort: 8080}
+	if err := json.Unmarshal(file, &newConfig); err != nil {
+		log.Printf("Error parsing config: %v", err)
+		return
+	}
 
-	// Setup file watcher
+	if newConfig.Interval < 60 {
+		newConfig.Interval = 300
+	}
+
+	if !firstLoad {
+		handleConfigChanges(newConfig)
+	}
+
+	config = newConfig
+	health.Lock()
+	health.Interval = config.Interval
+	health.Unlock()
+
+	log.Printf("Config loaded: %+v", config)
+}
+
+func handleConfigChanges(newConfig Config) {
+	if newConfig.Interval != config.Interval {
+		log.Println("Interval changed, restarting IP checker")
+		stopIPChecker()
+		startIPChecker()
+	}
+
+	if newConfig.HealthPort != config.HealthPort {
+		log.Println("Health port changed, restarting health server")
+		stopHealthServer()
+		startHealthServer()
+	}
+}
+
+func watchConfig() {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
 	defer watcher.Close()
 
-	// Watch config file
-	if err := watcher.Add(configPath); err != nil {
-		panic(err)
+	err = watcher.Add(configPath)
+	if err != nil {
+		log.Fatal(err)
 	}
 
-	// Handle signals for graceful shutdown
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt)
-
-	// Start health check server
-	go startHealthServer()
-
-	// Start the main loop
-	go runDDNSUpdater(ctx)
-
-	// Main loop
 	for {
 		select {
-		case <-sigChan:
-			fmt.Println("Shutting down...")
-			return
-
 		case event, ok := <-watcher.Events:
 			if !ok {
 				return
 			}
-			if event.Op&fsnotify.Write == fsnotify.Write || event.Op&fsnotify.Create == fsnotify.Create {
-				fmt.Println("Config file modified, reloading...")
-				if err := loadConfig(); err != nil {
-					fmt.Printf("Error reloading config: %v\n", err)
-				}
+			if event.Op&fsnotify.Write == fsnotify.Write {
+				log.Println("Config file modified")
+				loadConfig(false)
 			}
-
 		case err, ok := <-watcher.Errors:
 			if !ok {
 				return
 			}
-			fmt.Printf("Watcher error: %v\n", err)
+			log.Println("Watcher error:", err)
 		}
 	}
 }
 
-func startHealthServer() {
-	configLock.RLock()
-	port := config.HealthPort
-	if port == 0 {
-		port = 8080 // default port
-	}
-	configLock.RUnlock()
+func startIPChecker() {
+	ctx, cancel := context.WithCancel(context.Background())
+	ipCheckerCancel = cancel
+	go runIPChecker(ctx)
+}
 
-	http.HandleFunc("/health", healthHandler)
-	fmt.Printf("Starting health check server on :%d\n", port)
-	err := http.ListenAndServe(fmt.Sprintf(":%d", port), nil)
-	if err != nil {
-		fmt.Printf("Health server failed: %v\n", err)
+func stopIPChecker() {
+	if ipCheckerCancel != nil {
+		ipCheckerCancel()
 	}
 }
 
-func healthHandler(w http.ResponseWriter, r *http.Request) {
-	healthStatus.RLock()
-	defer healthStatus.RUnlock()
-
-	status := map[string]interface{}{
-		"healthy":     healthStatus.IsHealthy,
-		"last_update": healthStatus.LastUpdate,
-		"last_error":  healthStatus.LastError,
-		"current_ip":  healthStatus.IP,
-		"uptime":      time.Since(startTime).String(),
-	}
-
-	configLock.RLock()
-	status["interval"] = config.Interval
-	configLock.RUnlock()
-
-	w.Header().Set("Content-Type", "application/json")
-	if !healthStatus.IsHealthy {
-		w.WriteHeader(http.StatusServiceUnavailable)
-	}
-
-	json.NewEncoder(w).Encode(status)
-}
-
-func updateHealthStatus(healthy bool, errorMsg string, ip string) {
-	healthStatus.Lock()
-	defer healthStatus.Unlock()
-
-	healthStatus.IsHealthy = healthy
-	healthStatus.LastError = errorMsg
-	healthStatus.IP = ip
-	if healthy {
-		healthStatus.LastUpdate = time.Now()
-	}
-}
-
-func loadConfig() error {
-	configLock.Lock()
-	defer configLock.Unlock()
-
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		return err
-	}
-
-	var newConfig Config
-	if err := json.Unmarshal(data, &newConfig); err != nil {
-		return err
-	}
-
-	// Validate interval
-	if newConfig.Interval < 1 {
-		newConfig.Interval = 300 // default to 5 minutes
-	}
-
-	config = newConfig
-	return nil
-}
-
-func runDDNSUpdater(ctx context.Context) {
-	var ticker *time.Ticker
-	var currentInterval int
-
-	// Initial setup
-	configLock.RLock()
-	currentInterval = config.Interval
-	ticker = time.NewTicker(time.Duration(currentInterval) * time.Second)
-	configLock.RUnlock()
-
+func runIPChecker(ctx context.Context) {
+	ticker := time.NewTicker(time.Duration(config.Interval) * time.Second)
 	defer ticker.Stop()
+
+	checkAndUpdateIP()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-
 		case <-ticker.C:
-			updateIPAndDDNS()
-
-			// Check for interval changes
-			configLock.RLock()
-			newInterval := config.Interval
-			configLock.RUnlock()
-
-			if newInterval != currentInterval {
-				currentInterval = newInterval
-				ticker.Reset(time.Duration(currentInterval) * time.Second)
-				fmt.Printf("Update interval changed to %d seconds\n", currentInterval)
-			}
+			checkAndUpdateIP()
 		}
 	}
 }
+
+func startHealthServer() {
+	ctx, cancel := context.WithCancel(context.Background())
+	healthServerCancel = cancel
+	go runHealthServer(ctx)
+}
+
+func stopHealthServer() {
+	if healthServerCancel != nil {
+		healthServerCancel()
+	}
+}
+
+func runHealthServer(ctx context.Context) {
+	server := &http.Server{
+		Addr:    fmt.Sprintf(":%d", config.HealthPort),
+		Handler: http.HandlerFunc(healthHandler),
+	}
+
+	go func() {
+		log.Printf("Starting health server on :%d", config.HealthPort)
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Health server failed: %v", err)
+		}
+	}()
+
+	<-ctx.Done()
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		log.Printf("Health server shutdown error: %v", err)
+	}
+}
+
+func checkAndUpdateIP() {
+	ip, err := getPublicIP()
+	if err != nil {
+		health.Lock()
+		health.Healthy = false
+		health.LastError = err.Error()
+		health.Unlock()
+		log.Printf("Error getting IP: %v", err)
+		return
+	}
+
+	health.Lock()
+	health.CurrentIP = ip
+	health.Unlock()
+
+	if ip != ipCache {
+		if err := updateDDNS(ip); err != nil {
+			health.Lock()
+			health.Healthy = false
+			health.LastError = err.Error()
+			health.Unlock()
+			log.Printf("DDNS update failed: %v", err)
+			return
+		}
+		ipCache = ip
+		log.Printf("DDNS updated successfully with IP: %s", ip)
+	} else {
+		log.Printf("IP unchanged: %s", ip)
+	}
+
+	health.Lock()
+	health.Healthy = true
+	health.LastError = ""
+	health.LastUpdate = time.Now()
+	health.Unlock()
+}
+
 func getPublicIP() (string, error) {
-	resp, err := http.Get("https://api.ipify.org")
+	resp, err := client.Get("https://api.ipify.org")
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("unexpected status: %s", resp.Status)
+	}
 
 	ip, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -222,52 +242,40 @@ func getPublicIP() (string, error) {
 }
 
 func updateDDNS(ip string) error {
-	configLock.RLock()
-	defer configLock.RUnlock()
+	url := fmt.Sprintf("https://%s:%s@%s?myip=%s",
+		config.User, config.Pass, config.Ddns, ip)
 
-	client := &http.Client{}
-	url := fmt.Sprintf("https://%s:%s@%s?myip=%s", config.User, config.Pass, config.Ddns, ip)
-	req, err := http.NewRequest("Get", url, nil)
-	if err != nil {
-		return err
-	}
-
-	resp, err := client.Do(req)
+	resp, err := client.Get(url)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("DDNS update failed with status: %s", resp.Status)
+		return fmt.Errorf("ddns update failed with status: %s", resp.Status)
 	}
 
 	return nil
 }
 
-func updateIPAndDDNS() {
-	newIP, err := getPublicIP()
-	if err != nil {
-		updateHealthStatus(false, err.Error(), "")
-		fmt.Printf("Error getting public IP: %v\n", err)
-		return
-	}
+func healthHandler(w http.ResponseWriter, r *http.Request) {
+	health.RLock()
+	defer health.RUnlock()
 
-	if newIP == ipCache {
-		fmt.Println("IP unchanged, skipping update")
-		updateHealthStatus(true, "", "")
-		return
-	}
-
-	fmt.Printf("Detected new IP: %s\n", newIP)
-
-	if err := updateDDNS(newIP); err != nil {
-		updateHealthStatus(false, err.Error(), newIP)
-		fmt.Printf("Error updating DDNS: %v\n", err)
-		return
-	}
-
-	ipCache = newIP
-	updateHealthStatus(true, "", "")
-	fmt.Println("Successfully updated DDNS record")
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(struct {
+		Healthy    bool      `json:"healthy"`
+		LastUpdate time.Time `json:"last_update"`
+		LastError  string    `json:"last_error"`
+		CurrentIP  string    `json:"current_ip"`
+		Uptime     string    `json:"uptime"`
+		Interval   int       `json:"interval"`
+	}{
+		Healthy:    health.Healthy,
+		LastUpdate: health.LastUpdate,
+		LastError:  health.LastError,
+		CurrentIP:  health.CurrentIP,
+		Uptime:     time.Since(health.StartTime).String(),
+		Interval:   health.Interval,
+	})
 }
