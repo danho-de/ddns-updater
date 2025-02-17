@@ -1,6 +1,6 @@
 # DDNS Updater
 
-A lightweight Go application that monitors your public IP and updates your DDNS provider when changes are detected. It supports dynamic configuration reloading, graceful shutdown, and exposes a health check endpoint following Docker health check conventions.
+A lightweight Go application that monitors your public IP and updates your DDNS provider when changes are detected. It supports dynamic configuration reloading, graceful shutdown.
 
 ## Features
 
@@ -9,20 +9,6 @@ A lightweight Go application that monitors your public IP and updates your DDNS 
 
 - **Configurable:**  
   Loads settings from a JSON configuration file (`config/config.json`) and automatically reloads when changes are detected.
-
-- **Health Check Endpoint:**  
-  Exposes a `/health` HTTP endpoint that reports the application’s status with a detailed JSON structure. The output includes:
-
-  - Status: Indicates whether the application is "starting", "healthy", or "unhealthy".
-  - FailingStreak: The count of consecutive failed IP update attempts.
-  - Log: A list of recent log entries, each containing:
-    - Start: Timestamp when the health check started.
-    - End: Timestamp when the health check ended.
-    - ExitCode: Exit code (0 for success, 1 for failure).
-    - Output: A message indicating the outcome of the check.
-
-
-
 
 - **Graceful Shutdown:**  
   Listens for interrupt signals (Ctrl+C) and shuts down cleanly.
@@ -52,7 +38,6 @@ cd your-ddns-updater
     "pass": "your-password",
     "ddns": "your-ddns-server.com",
     "interval": 300,
-    "health_port": 8080
     }
   ```
 
@@ -60,8 +45,6 @@ cd your-ddns-updater
 - pass: Your DDNS service password.
 - ddns: The DDNS service endpoint (host/path) used in the update URL.
 - interval: Update interval in seconds (defaults to 300 seconds if set below 1).
-- health_port: Port for the health check HTTP server (defaults to 8080 if not provided).
-
 ## Build Instructions
 
 A build script (build.sh) is provided to format and compile the application with a build number derived from the git commit history. The build is statically linked for Linux using CGO_ENABLED=0.
@@ -90,44 +73,6 @@ The application will:
 - Monitor your public IP.
 - Update your DDNS record when a change is detected.
 - Watch for configuration file changes and reload settings automatically.
-- Expose a health check endpoint
-
-## Health Check
-
-The health check HTTP server starts on the port specified in config.json (or defaults to 8080). To check the status of the application, send a GET request to:
-
-```
-    http://localhost:8080/health
-```
-
-The JSON response includes:
-
-  ```
-  {
-    "Status": "healthy",
-    "FailingStreak": 0,
-    "Log": [
-      {
-        "Start": "2021-09-07T06:10:05.233163051Z",
-        "End": "2021-09-07T06:10:07.585487343Z",
-        "ExitCode": 0,
-        "Output": "DDNS updated successfully with IP: 1.2.3.4"
-      }
-      // ... additional log entries ...
-    ]
-    
-  }
-  ```
-
-
-- Status: Indicates whether the application is "starting", "healthy", or "unhealthy".
-- FailingStreak: The count of consecutive failed IP update attempts.
-- Log: A list of recent log entries, each containing:
-  - Start: Timestamp when the health check started.
-  - End: Timestamp when the health check ended.
-  - ExitCode: Exit code (0 for success, 1 for failure).
-  - Output: A message indicating the outcome of the check.
-
 
 ## Docker Deployment
 
@@ -150,16 +95,7 @@ To build the Docker image, run:
 ## Running the Docker Container
 
 ```
-    docker run -d -p 8080:8080 --name ddns-updater ddns-updater
-```
-
-If you have specified a different health_port in your configuration, adjust the port mapping accordingly.
-
-Note:
-You can also configure a Docker health check using this endpoint. For example, in your Dockerfile, you could add:
-
-```
-   HEALTHCHECK CMD curl -f http://localhost:8080/health || exit 1
+    docker run -d --name ddns-updater ddns-updater
 ```
 
 ## Contributing
