@@ -50,13 +50,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Normalize repository name to lowercase
-        run: echo "REPO_LC=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
-
       - name: Build and push Docker image
         uses: docker/build-push-action@v4
         with:
           context: .
           file: Dockerfile
           push: true
-          tags: ghcr.io/${{ env.REPO_LC }}/ddns-updater:latest
+          tags: ghcr.io/${{ repository_owner }}/ddns-updater:latest
