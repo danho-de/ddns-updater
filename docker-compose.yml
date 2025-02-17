@@ -1,0 +1,14 @@
+services:
+  ddns-updater:
+    image: ghcr.io/danho-de/ddns-updater:latest
+    container_name: ddns-updater
+    restart: unless-stopped
+    volumes:
+      - ./config/config.json:/app/config/config.json:ro
+    ports:
+      - "8080:8080"  # Exposes health check endpoint
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
