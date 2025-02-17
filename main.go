@@ -14,29 +14,24 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
-// Config remains unchanged.
 type Config struct {
 	User       string `json:"user"`
 	Pass       string `json:"pass"`
 	Ddns       string `json:"ddns"`
-	Interval   int    `json:"interval"`    // default 300
-	HealthPort int    `json:"health_port"` // default 8080
+	Interval   int    `json:"interval"`
+	HealthPort int    `json:"health_port"`
 }
 
-// Updated HealthStatus includes FailingStreak and Log.
 type HealthStatus struct {
 	sync.RWMutex
-	Healthy       bool             `json:"healthy"`
-	LastUpdate    time.Time        `json:"last_update"`
-	LastError     string           `json:"last_error"`
-	CurrentIP     string           `json:"current_ip"`
 	StartTime     time.Time        `json:"-"`
-	Interval      int              `json:"interval"`
-	FailingStreak int              `json:"failing_streak"`
-	Log           []HealthLogEntry `json:"log"`
+	CurrentIP     string           `json:"-"`
+	FailingStreak int              `json:"FailingStreak"`
+	Log           []HealthLogEntry `json:"Log"`
+	Status        string           `json:"Status"`
+	LastError     string           `json:"-"`
 }
 
-// HealthLogEntry holds details for each IP check attempt.
 type HealthLogEntry struct {
 	Start    time.Time `json:"Start"`
 	End      time.Time `json:"End"`
@@ -44,24 +39,10 @@ type HealthLogEntry struct {
 	Output   string    `json:"Output"`
 }
 
-// HealthResponse and HealthState represent the new output structure.
-type HealthResponse struct {
-	Created time.Time   `json:"Created"`
-	Path    string      `json:"Path"`
-	Args    []string    `json:"Args"`
-	State   HealthState `json:"State"`
-}
-
-type HealthState struct {
-	Status        string           `json:"Status"`        // "starting", "healthy", or "unhealthy"
-	FailingStreak int              `json:"FailingStreak"` // current failing streak count
-	Log           []HealthLogEntry `json:"Log"`           // recent log entries
-}
-
 var (
 	config             Config
 	configPath         = "config/config.json"
-	health             = HealthStatus{StartTime: time.Now()}
+	health             = HealthStatus{StartTime: time.Now(), Status: "starting"}
 	ipCache            string
 	client             = &http.Client{Timeout: 10 * time.Second}
 	ipCheckerCancel    context.CancelFunc
@@ -76,7 +57,6 @@ func main() {
 	select {}
 }
 
-// loadConfig and handleConfigChanges remain unchanged.
 func loadConfig(firstLoad bool) {
 	file, err := os.ReadFile(configPath)
 	if err != nil {
@@ -98,10 +78,6 @@ func loadConfig(firstLoad bool) {
 	}
 
 	config = newConfig
-	health.Lock()
-	health.Interval = config.Interval
-	health.Unlock()
-
 	log.Println("Config loaded successfully")
 }
 
@@ -213,74 +189,64 @@ func runHealthServer(ctx context.Context) {
 }
 
 func checkAndUpdateIP() {
-	// Record the start time of the check.
 	start := time.Now()
-
 	ip, err := getPublicIP()
 	end := time.Now()
-	var exitCode int
-	var output string
+
+	var entry HealthLogEntry
+	health.Lock()
+	defer health.Unlock()
 
 	if err != nil {
-		exitCode = 1
-		output = fmt.Sprintf("Error getting IP: %v", err)
-		health.Lock()
-		health.Healthy = false
-		health.LastError = err.Error()
+		entry = HealthLogEntry{
+			Start:    start,
+			End:      end,
+			ExitCode: 1,
+			Output:   fmt.Sprintf("Error getting IP: %v", err),
+		}
+		health.Status = "unhealthy"
 		health.FailingStreak++
-		health.Unlock()
-		log.Printf("Error getting IP: %v", err)
 	} else {
-		// Successful IP fetch
 		if ip != ipCache {
 			if err := updateDDNS(ip); err != nil {
-				exitCode = 1
-				output = fmt.Sprintf("DDNS update failed: %v", err)
-				health.Lock()
-				health.Healthy = false
-				health.LastError = err.Error()
+				entry = HealthLogEntry{
+					Start:    start,
+					End:      end,
+					ExitCode: 1,
+					Output:   fmt.Sprintf("DDNS update failed: %v", err),
+				}
+				health.Status = "unhealthy"
 				health.FailingStreak++
-				health.Unlock()
-				log.Printf("DDNS update failed: %v", err)
 			} else {
 				ipCache = ip
-				exitCode = 0
-				output = fmt.Sprintf("DDNS updated successfully with IP: %s", ip)
-				health.Lock()
-				health.Healthy = true
-				health.LastError = ""
+				entry = HealthLogEntry{
+					Start:    start,
+					End:      end,
+					ExitCode: 0,
+					Output:   fmt.Sprintf("DDNS updated successfully with IP: %s", ip),
+				}
+				log.Printf("DDNS updated successfully with IP: %s", ip)
+				health.Status = "healthy"
 				health.FailingStreak = 0
 				health.CurrentIP = ip
-				health.LastUpdate = time.Now()
-				health.Unlock()
-				log.Printf("DDNS updated successfully with IP: %s", ip)
 			}
 		} else {
-			exitCode = 0
-			output = fmt.Sprintf("IP unchanged: %s", ip)
-			health.Lock()
-			health.Healthy = true
-			health.LastError = ""
-			health.FailingStreak = 0
-			health.LastUpdate = time.Now()
-			health.Unlock()
+			entry = HealthLogEntry{
+				Start:    start,
+				End:      end,
+				ExitCode: 0,
+				Output:   fmt.Sprintf("IP unchanged: %s", ip),
+			}
 			log.Printf("IP unchanged: %s", ip)
+			health.Status = "healthy"
+			health.FailingStreak = 0
 		}
 	}
 
-	// Append a new log entry for this check.
-	health.Lock()
-	health.Log = append(health.Log, HealthLogEntry{
-		Start:    start,
-		End:      end,
-		ExitCode: exitCode,
-		Output:   output,
-	})
-	// Optionally, limit the log slice to the last 10 entries.
+	health.Log = append(health.Log, entry)
 	if len(health.Log) > 10 {
-		health.Log = health.Log[len(health.Log)-10:]
+		health.Log = health.Log[1:]
 	}
-	health.Unlock()
 }
 
 func getPublicIP() (string, error) {
@@ -319,32 +285,27 @@ func updateDDNS(ip string) error {
 	return nil
 }
 
-// healthHandler now builds and returns the new JSON structure.
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	health.RLock()
 	defer health.RUnlock()
 
-	// Determine the status: if no update has yet occurred, show "starting"
-	status := "starting"
-	if !health.LastUpdate.IsZero() {
-		if health.Healthy {
-			status = "healthy"
-		} else {
-			status = "unhealthy"
-		}
+	// Set proper HTTP status code
+	switch health.Status {
+	case "healthy":
+		w.WriteHeader(http.StatusOK)
+	case "unhealthy":
+		w.WriteHeader(http.StatusServiceUnavailable)
+	default:
+		w.WriteHeader(http.StatusOK)
 	}
 
-	response := HealthResponse{
-		Created: health.StartTime,
-		Path:    r.URL.Path, // will be "/health"
-		Args:    os.Args,    // returns the command-line arguments
-		State: HealthState{
-			Status:        status,
-			FailingStreak: health.FailingStreak,
-			Log:           health.Log,
-		},
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	json.NewEncoder(w).Encode(struct {
+		Status        string           `json:"Status"`
+		FailingStreak int              `json:"FailingStreak"`
+		Log           []HealthLogEntry `json:"Log"`
+	}{
+		Status:        health.Status,
+		FailingStreak: health.FailingStreak,
+		Log:           health.Log,
+	})
 }

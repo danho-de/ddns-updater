@@ -13,19 +13,13 @@ A lightweight Go application that monitors your public IP and updates your DDNS 
 - **Health Check Endpoint:**  
   Exposes a `/health` HTTP endpoint that reports the application’s status with a detailed JSON structure. The output includes:
 
-
-
-  - Created: Timestamp when the application started.
-  - Path: The request path (typically /health).
-  - Args: The command-line arguments used to start the application.
-  - State: Detailed health state including:
-    - Status: Indicates whether the application is "starting", "healthy", or "unhealthy".
-    - FailingStreak: The count of consecutive failed IP update attempts.
-    - Log: A list of recent log entries, each containing:
-      - Start: Timestamp when the health check started.
-      - End: Timestamp when the health check ended.
-      - ExitCode: Exit code (0 for success, 1 for failure).
-      - Output: A message indicating the outcome of the check.
+  - Status: Indicates whether the application is "starting", "healthy", or "unhealthy".
+  - FailingStreak: The count of consecutive failed IP update attempts.
+  - Log: A list of recent log entries, each containing:
+    - Start: Timestamp when the health check started.
+    - End: Timestamp when the health check ended.
+    - ExitCode: Exit code (0 for success, 1 for failure).
+    - Output: A message indicating the outcome of the check.
 
 
 
@@ -110,32 +104,29 @@ The JSON response includes:
 
   ```
   {
-    "Created": "2024-05-20T07:50:50.644083882Z",
-    "Path": "/health",
-    "Args": [
-      "./ddns-updater",
-      "--some-flag"
-    ],
-    "State": {
-      "Status": "healthy",
-      "FailingStreak": 0,
-      "Log": [
-        {
-          "Start": "2021-09-07T06:10:05.233163051Z",
-          "End": "2021-09-07T06:10:07.585487343Z",
-          "ExitCode": 0,
-          "Output": "DDNS updated successfully with IP: 1.2.3.4"
-        }
-        // ... additional log entries ...
-      ]
-    }
+    "Status": "healthy",
+    "FailingStreak": 0,
+    "Log": [
+      {
+        "Start": "2021-09-07T06:10:05.233163051Z",
+        "End": "2021-09-07T06:10:07.585487343Z",
+        "ExitCode": 0,
+        "Output": "DDNS updated successfully with IP: 1.2.3.4"
+      }
+      // ... additional log entries ...
+    ]
+    
   }
   ```
 
-- Created: The timestamp when the application started.
-- Path: The endpoint path (typically /health).
-- Args: Command-line arguments used to run the application.
-- State: Includes the current health status, the number of consecutive failures, and a log of recent health checks.
+
+- Status: Indicates whether the application is "starting", "healthy", or "unhealthy".
+- FailingStreak: The count of consecutive failed IP update attempts.
+- Log: A list of recent log entries, each containing:
+  - Start: Timestamp when the health check started.
+  - End: Timestamp when the health check ended.
+  - ExitCode: Exit code (0 for success, 1 for failure).
+  - Output: A message indicating the outcome of the check.
 
 
 ## Docker Deployment
