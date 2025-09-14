@@ -15,6 +15,11 @@ A robust Go application that continuously monitors your public IP and updates yo
   - Validation of required fields
   - Self-healing when invalid config becomes valid
 
+- **Intelligent IP Tracking:**  
+  - Records timestamp of last IP change
+  - Displays when IP was last changed in logs
+  - Provides context for unchanged IP addresses
+
 - **Safe Operation:**  
   - Maintains last known good configuration
   - Graceful shutdown handling (Ctrl+C)

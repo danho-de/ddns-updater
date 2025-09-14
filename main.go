@@ -28,6 +28,7 @@ var (
 	client           = &http.Client{Timeout: 10 * time.Second}
 	ipCheckerCancel  context.CancelFunc
 	ipCheckerRunning bool
+	lastChangeTime   time.Time
 )
 
 func main() {
@@ -170,7 +171,12 @@ func checkAndUpdateIP() {
 	}
 
 	if ip == ipCache {
-		log.Printf("IP unchanged: %s", ip)
+		if !lastChangeTime.IsZero() {
+			log.Printf("IP unchanged: %s (last changed %s ago)", ip,
+				lastChangeTime.Format("2006-01-02 15:04:05"))
+		} else {
+			log.Printf("IP unchanged: %s (change time unknown)", ip)
+		}
 		return
 	}
 
@@ -181,6 +187,7 @@ func checkAndUpdateIP() {
 	}
 
 	ipCache = ip
+	lastChangeTime = time.Now()
 	log.Printf("DDNS updated successfully with IP: %s", ip)
 }
 

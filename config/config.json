@@ -2,6 +2,5 @@
     "user": "your_username",
     "pass": "your_password",
     "ddns": "your.ddns.provider",
-    "interval": 300,
-    "health_port": 8080
+    "interval": 300
 }
