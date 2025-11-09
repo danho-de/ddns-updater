@@ -8,3 +8,6 @@ ddns-updater
 # misc
 .history
 
+# Rust build artifacts
+/target/
+Cargo.lock

@@ -1,6 +1,6 @@
 {
     "user": "your_username",
     "pass": "your_password",
-    "ddns": "your.ddns.provider",
+    "ddns": "your.ddns.provider.com",
     "interval": 300
 }
