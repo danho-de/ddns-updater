@@ -172,7 +172,7 @@ func checkAndUpdateIP() {
 
 	if ip == ipCache {
 		if !lastChangeTime.IsZero() {
-			log.Printf("IP unchanged: %s (last changed %s ago)", ip,
+			log.Printf("IP unchanged: %s (last changed %s)", ip,
 				lastChangeTime.Format("2006-01-02 15:04:05"))
 		} else {
 			log.Printf("IP unchanged: %s (change time unknown)", ip)
